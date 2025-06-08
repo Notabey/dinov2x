@@ -3,7 +3,7 @@
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
 
-import os
+import os, sys
 import random
 import re
 import socket
@@ -261,7 +261,7 @@ def enable(*, set_cuda_current_device: bool = True, overwrite: bool = False, all
             _check_env_variable(key, value)
         os.environ[key] = value
 
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend="nccl" if sys.platform == "linux" else "gloo",)
     dist.barrier()
 
     # Finalize setup

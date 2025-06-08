@@ -4,9 +4,12 @@
 # found in the LICENSE file in the root directory of this source tree.
 
 import csv
+import webdataset as wds
 from enum import Enum
 import logging
-import os
+import glob
+import os, sys
+from tqdm import tqdm
 from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
@@ -65,6 +68,7 @@ class ImageNet(ExtendedVisionDataset):
         transforms: Optional[Callable] = None,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
+        webdataset: bool = False,
     ) -> None:
         super().__init__(root, transforms, transform, target_transform)
         self._extra_root = extra
@@ -73,6 +77,14 @@ class ImageNet(ExtendedVisionDataset):
         self._entries = None
         self._class_ids = None
         self._class_names = None
+        
+        self.webdataset = webdataset
+        if webdataset:
+            self.tar_files = sorted(glob.glob(os.path.join(self.root, f"*{self._split.value.lower()}*.tar")))
+            if sys.platform == "win32":
+                self.tar_files = ["file:" + os.path.abspath(path).replace("\\", "/") for path in self.tar_files]
+            # print(f"Using webdataset tar files: {self.tar_files}")
+            # self._preload_webdataset()
 
     @property
     def split(self) -> "ImageNet.Split":
@@ -133,16 +145,31 @@ class ImageNet(ExtendedVisionDataset):
         return str(class_names[class_index])
 
     def get_image_data(self, index: int) -> bytes:
-        entries = self._get_entries()
-        actual_index = entries[index]["actual_index"]
+        if self.webdataset:
+            entries = self._get_entries()
+            entry = entries[index]
+            key = entry["key"]
+            tar_file = entry["tar_file"]
+            tar_path = os.path.abspath(os.path.join(self.root, tar_file))
+            if sys.platform == "win32":
+                tar_path = "file:" + tar_path.replace("\\", "/")
+            # print(f"Using tar file: {tar_path}")
 
-        class_id = self.get_class_id(index)
+            # 只遍历目标 tar 包，查找 key
+            for img_bytes, sample_key in wds.WebDataset(tar_path, shardshuffle=False).to_tuple("jpg", "__key__"):
+                if sample_key == key:
+                    return img_bytes
+        else:
+            entries = self._get_entries()
+            actual_index = entries[index]["actual_index"]
 
-        image_relpath = self.split.get_image_relpath(actual_index, class_id)
-        image_full_path = os.path.join(self.root, image_relpath)
-        with open(image_full_path, mode="rb") as f:
-            image_data = f.read()
-        return image_data
+            class_id = self.get_class_id(index)
+
+            image_relpath = self.split.get_image_relpath(actual_index, class_id)
+            image_full_path = os.path.join(self.root, image_relpath)
+            with open(image_full_path, mode="rb") as f:
+                image_data = f.read()
+            return image_data
 
     def get_target(self, index: int) -> Optional[Target]:
         entries = self._get_entries()
@@ -168,18 +195,64 @@ class ImageNet(ExtendedVisionDataset):
         assert len(entries) == self.split.length
         return len(entries)
 
+    def _preload_webdataset(self):
+        if self.split != _Split.TEST:
+            self.dataset = (
+                wds.WebDataset(self.tar_files, shardshuffle=66)
+                .to_tuple("jpg", "cls", "__key__")
+            )
+
+            class_id_to_index = {}
+            self._class_ids = []
+            self._class_names = []
+            entries = []
+            actual_index = 0
+            
+            for tar_file in tqdm(self.tar_files, desc=f"Processing split {self._split.value}"):
+                dataset = wds.WebDataset(tar_file, shardshuffle=66).to_tuple("jpg", "cls", "__key__")
+                for _, cls, key in dataset:
+                    cls = int(cls)
+                    class_id = str(cls)
+                    class_name = f"class_{cls}"
+
+                    if class_id not in class_id_to_index:
+                        class_id_to_index[class_id] = len(class_id_to_index)
+                        self._class_ids.append(class_id)
+                        self._class_names.append(class_name)
+
+                    class_index = class_id_to_index[class_id]
+                    actual_index += 1
+                    entries.append((actual_index, class_index, class_id, class_name, key, os.path.basename(tar_file)))
+
+            self._entries = np.array(
+                entries,
+                dtype=[
+                    ("actual_index", "<u4"),
+                    ("class_index", "<u4"),
+                    ("class_id", "U32"),
+                    ("class_name", "U64"),
+                    ("key", f"U32"),
+                    ("tar_file", f"U32"),
+                ],
+            )
+            self._class_ids = np.array(self._class_ids)
+            self._class_names = np.array(self._class_names)
+        else:
+            pass
+
     def _load_labels(self, labels_path: str) -> List[Tuple[str, str]]:
         labels_full_path = os.path.join(self.root, labels_path)
         labels = []
-
-        try:
-            with open(labels_full_path, "r") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    class_id, class_name = row
-                    labels.append((class_id, class_name))
-        except OSError as e:
-            raise RuntimeError(f'can not read labels file "{labels_full_path}"') from e
+        
+        if os.path.exists(labels_full_path):
+            try:
+                with open(labels_full_path, "r") as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        class_id, class_name = row
+                        labels.append((class_id, class_name))
+            except OSError as e:
+                raise RuntimeError(f'can not read labels file "{labels_full_path}"') from e
 
         return labels
 
@@ -189,35 +262,7 @@ class ImageNet(ExtendedVisionDataset):
             dataset = None
             sample_count = split.length
             max_class_id_length, max_class_name_length = 0, 0
-        else:
-            labels_path = "labels.txt"
-            logger.info(f'loading labels from "{labels_path}"')
-            labels = self._load_labels(labels_path)
 
-            # NOTE: Using torchvision ImageFolder for consistency
-            from torchvision.datasets import ImageFolder
-
-            dataset_root = os.path.join(self.root, split.get_dirname())
-            dataset = ImageFolder(dataset_root)
-            sample_count = len(dataset)
-            max_class_id_length, max_class_name_length = -1, -1
-            for sample in dataset.samples:
-                _, class_index = sample
-                class_id, class_name = labels[class_index]
-                max_class_id_length = max(len(class_id), max_class_id_length)
-                max_class_name_length = max(len(class_name), max_class_name_length)
-
-        dtype = np.dtype(
-            [
-                ("actual_index", "<u4"),
-                ("class_index", "<u4"),
-                ("class_id", f"U{max_class_id_length}"),
-                ("class_name", f"U{max_class_name_length}"),
-            ]
-        )
-        entries_array = np.empty(sample_count, dtype=dtype)
-
-        if split == ImageNet.Split.TEST:
             old_percent = -1
             for index in range(sample_count):
                 percent = 100 * (index + 1) // sample_count
@@ -228,23 +273,63 @@ class ImageNet(ExtendedVisionDataset):
                 actual_index = index + 1
                 class_index = np.uint32(-1)
                 class_id, class_name = "", ""
+
+                dtype = np.dtype(
+                    [
+                        ("actual_index", "<u4"),
+                        ("class_index", "<u4"),
+                        ("class_id", f"U{max_class_id_length}"),
+                        ("class_name", f"U{max_class_name_length}"),
+                    ]
+                )
+                entries_array = np.empty(sample_count, dtype=dtype)
                 entries_array[index] = (actual_index, class_index, class_id, class_name)
         else:
-            class_names = {class_id: class_name for class_id, class_name in labels}
+            if not self.webdataset:
+                labels_path = "labels.txt"
+                logger.info(f'loading labels from "{labels_path}"')
+                labels = self._load_labels(labels_path)
 
-            assert dataset
-            old_percent = -1
-            for index in range(sample_count):
-                percent = 100 * (index + 1) // sample_count
-                if percent > old_percent:
-                    logger.info(f"creating entries: {percent}%")
-                    old_percent = percent
+                # NOTE: Using torchvision ImageFolder for consistency
+                from torchvision.datasets import ImageFolder
 
-                image_full_path, class_index = dataset.samples[index]
-                image_relpath = os.path.relpath(image_full_path, self.root)
-                class_id, actual_index = split.parse_image_relpath(image_relpath)
-                class_name = class_names[class_id]
-                entries_array[index] = (actual_index, class_index, class_id, class_name)
+                dataset_root = os.path.join(self.root, split.get_dirname())
+                dataset = ImageFolder(dataset_root)
+                sample_count = len(dataset)
+                max_class_id_length, max_class_name_length = -1, -1
+                for sample in dataset.samples:
+                    _, class_index = sample
+                    class_id, class_name = labels[class_index]
+                    max_class_id_length = max(len(class_id), max_class_id_length)
+                    max_class_name_length = max(len(class_name), max_class_name_length)
+
+                dtype = np.dtype(
+                    [
+                        ("actual_index", "<u4"),
+                        ("class_index", "<u4"),
+                        ("class_id", f"U{max_class_id_length}"),
+                        ("class_name", f"U{max_class_name_length}"),
+                    ]
+                )
+                entries_array = np.empty(sample_count, dtype=dtype)
+
+                class_names = {class_id: class_name for class_id, class_name in labels}
+
+                assert dataset
+                old_percent = -1
+                for index in range(sample_count):
+                    percent = 100 * (index + 1) // sample_count
+                    if percent > old_percent:
+                        logger.info(f"creating entries: {percent}%")
+                        old_percent = percent
+
+                    image_full_path, class_index = dataset.samples[index]
+                    image_relpath = os.path.relpath(image_full_path, self.root)
+                    class_id, actual_index = split.parse_image_relpath(image_relpath)
+                    class_name = class_names[class_id]
+                    entries_array[index] = (actual_index, class_index, class_id, class_name)
+            else:
+                entries_array = self._entries
 
         logger.info(f'saving entries to "{self._entries_path}"')
         self._save_extra(entries_array, self._entries_path)
@@ -253,31 +338,35 @@ class ImageNet(ExtendedVisionDataset):
         split = self.split
         if split == ImageNet.Split.TEST:
             return
+        
+        if not self.webdataset:
+            entries_array = self._load_extra(self._entries_path)
 
-        entries_array = self._load_extra(self._entries_path)
+            max_class_id_length, max_class_name_length, max_class_index = -1, -1, -1
+            for entry in entries_array:
+                class_index, class_id, class_name = (
+                    entry["class_index"],
+                    entry["class_id"],
+                    entry["class_name"],
+                )
+                max_class_index = max(int(class_index), max_class_index)
+                max_class_id_length = max(len(str(class_id)), max_class_id_length)
+                max_class_name_length = max(len(str(class_name)), max_class_name_length)
 
-        max_class_id_length, max_class_name_length, max_class_index = -1, -1, -1
-        for entry in entries_array:
-            class_index, class_id, class_name = (
-                entry["class_index"],
-                entry["class_id"],
-                entry["class_name"],
-            )
-            max_class_index = max(int(class_index), max_class_index)
-            max_class_id_length = max(len(str(class_id)), max_class_id_length)
-            max_class_name_length = max(len(str(class_name)), max_class_name_length)
-
-        class_count = max_class_index + 1
-        class_ids_array = np.empty(class_count, dtype=f"U{max_class_id_length}")
-        class_names_array = np.empty(class_count, dtype=f"U{max_class_name_length}")
-        for entry in entries_array:
-            class_index, class_id, class_name = (
-                entry["class_index"],
-                entry["class_id"],
-                entry["class_name"],
-            )
-            class_ids_array[class_index] = class_id
-            class_names_array[class_index] = class_name
+            class_count = max_class_index + 1
+            class_ids_array = np.empty(class_count, dtype=f"U{max_class_id_length}")
+            class_names_array = np.empty(class_count, dtype=f"U{max_class_name_length}")
+            for entry in entries_array:
+                class_index, class_id, class_name = (
+                    entry["class_index"],
+                    entry["class_id"],
+                    entry["class_name"],
+                )
+                class_ids_array[class_index] = class_id
+                class_names_array[class_index] = class_name
+        else:
+            class_ids_array = self._class_ids
+            class_names_array = self._class_names
 
         logger.info(f'saving class IDs to "{self._class_ids_path}"')
         self._save_extra(class_ids_array, self._class_ids_path)
@@ -286,5 +375,8 @@ class ImageNet(ExtendedVisionDataset):
         self._save_extra(class_names_array, self._class_names_path)
 
     def dump_extra(self) -> None:
+        if self.webdataset:
+            self._preload_webdataset()
+        
         self._dump_entries()
         self._dump_class_ids_and_names()

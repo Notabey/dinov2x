@@ -42,20 +42,23 @@ def _make_sample_transform(image_transform: Optional[Callable] = None, target_tr
 
 
 def _parse_dataset_str(dataset_str: str):
-    tokens = dataset_str.split(":")
+    tokens = dataset_str.split(";") # Use semicolon instead of colon to avoid confusion with Windows paths
 
     name = tokens[0]
     kwargs = {}
 
     for token in tokens[1:]:
+        logger.info(f"dataset token: {token}")
         key, value = token.split("=")
-        assert key in ("root", "extra", "split")
+        assert key in ("root", "extra", "split", "webdataset") # @wxy TODO: use 'datatype' instead of 'webdataset'
         kwargs[key] = value
 
     if name == "ImageNet":
         class_ = ImageNet
         if "split" in kwargs:
             kwargs["split"] = ImageNet.Split[kwargs["split"]]
+        if "webdataset" in kwargs:
+            kwargs["webdataset"] = True if kwargs["webdataset"].lower() == "yes" else False
     elif name == "ImageNet22k":
         class_ = ImageNet22k
     else:

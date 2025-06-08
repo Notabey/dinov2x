@@ -5,6 +5,7 @@
 
 from enum import Enum
 import os
+import platform
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -16,15 +17,18 @@ class ClusterType(Enum):
 
 
 def _guess_cluster_type() -> ClusterType:
-    uname = os.uname()
-    if uname.sysname == "Linux":
-        if uname.release.endswith("-aws"):
-            # Linux kernel versions on AWS instances are of the form "5.4.0-1051-aws"
-            return ClusterType.AWS
-        elif uname.nodename.startswith("rsc"):
-            # Linux kernel versions on RSC instances are standard ones but hostnames start with "rsc"
-            return ClusterType.RSC
-
+    if hasattr(platform, "uname"):
+        uname = platform.uname()
+        if uname.system == "Linux" or getattr(uname, "sysname", "") == "Linux":
+            if uname.release.endswith("-aws"):
+                return ClusterType.AWS
+            elif uname.node.startswith("rsc") or getattr(uname, "nodename", "").startswith("rsc"):
+                return ClusterType.RSC
+            return ClusterType.FAIR
+        elif uname.system == "Windows" or getattr(uname, "sysname", "") == "Windows":
+            # Windows 系统，直接返回 FAIR 或自定义类型
+            return ClusterType.FAIR
+    # 兜底
     return ClusterType.FAIR
 
 

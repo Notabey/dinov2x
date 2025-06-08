@@ -6,6 +6,7 @@
 import logging
 import os
 import sys
+from multiprocessing import freeze_support
 
 from dinov2.logging import setup_logging
 from dinov2.train import get_args_parser as get_train_args_parser
@@ -51,9 +52,17 @@ def main():
     setup_logging()
 
     assert os.path.exists(args.config_file), "Configuration file does not exist!"
-    submit_jobs(Trainer, args, name="dinov2:train")
-    return 0
+
+    if args.no_submitit:
+        from dinov2.train import main as train_main
+        train_main(args)
+        return 0
+    else:
+        submit_jobs(Trainer, args, name="dinov2:train")
+        return 0
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        freeze_support()
     sys.exit(main())

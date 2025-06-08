@@ -34,6 +34,11 @@ def get_args_parser(
         add_help=add_help,
     )
     parser.add_argument(
+        "--no-submitit",
+        action="store_true",
+        help="Disable submitit. Useful for compability issue.",
+    )
+    parser.add_argument(
         "--ngpus",
         "--gpus",
         "--gpus-per-node",
