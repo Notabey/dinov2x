@@ -158,6 +158,7 @@ class _TorchDistributedEnvironment:
         self.local_world_size = -1
 
         if _is_slurm_job_process():
+            print("SLURM JOB!!")
             return self._set_from_slurm_env()
 
         env_vars = _collect_env_vars()
@@ -166,6 +167,7 @@ class _TorchDistributedEnvironment:
             pass
         elif len(env_vars) == len(_TORCH_DISTRIBUTED_ENV_VARS):
             # Environment is fully set
+            print("torchrun!!!")
             return self._set_from_preset_env()
         else:
             # Environment is partially set
@@ -173,6 +175,7 @@ class _TorchDistributedEnvironment:
             raise RuntimeError(f"Partially set environment: {collected_env_vars}")
 
         if torch.cuda.device_count() > 0:
+            print("local script!!!")
             return self._set_from_local()
 
         raise RuntimeError("Can't initialize PyTorch distributed environment")
@@ -261,10 +264,12 @@ def enable(*, set_cuda_current_device: bool = True, overwrite: bool = False, all
             _check_env_variable(key, value)
         os.environ[key] = value
 
-    dist.init_process_group(backend="nccl" if sys.platform == "linux" else "gloo",)
+    dist.init_process_group(backend="nccl" if sys.platform == "linux" else "gloo")
     dist.barrier()
 
     # Finalize setup
     _LOCAL_RANK = torch_env.local_rank
     _LOCAL_WORLD_SIZE = torch_env.local_world_size
+
+    print("LOCAL INFO:", _LOCAL_RANK, _LOCAL_WORLD_SIZE, torch_env.local_rank)
     _restrict_print_to_main_process()

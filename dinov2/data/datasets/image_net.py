@@ -249,6 +249,7 @@ class ImageNet(ExtendedVisionDataset):
                 with open(labels_full_path, "r") as f:
                     reader = csv.reader(f)
                     for row in reader:
+                        # print('row: ', row)
                         class_id, class_name = row
                         labels.append((class_id, class_name))
             except OSError as e:
@@ -271,13 +272,13 @@ class ImageNet(ExtendedVisionDataset):
                     old_percent = percent
 
                 actual_index = index + 1
-                class_index = np.uint32(-1)
+                class_index = np.int32(-1)
                 class_id, class_name = "", ""
 
                 dtype = np.dtype(
                     [
                         ("actual_index", "<u4"),
-                        ("class_index", "<u4"),
+                        ("class_index", "<i4"),
                         ("class_id", f"U{max_class_id_length}"),
                         ("class_name", f"U{max_class_name_length}"),
                     ]

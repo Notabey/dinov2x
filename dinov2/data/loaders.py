@@ -196,7 +196,7 @@ def make_data_loader(
         persistent_workers: maintain the workers Dataset instances alive after a dataset has been consumed once.
         collate_fn: Function that performs batch collation
     """
-
+    logger.info(f"Using sampler: {sampler_type}, batch size: {batch_size}")
     sampler = _make_sampler(
         dataset=dataset,
         type=sampler_type,

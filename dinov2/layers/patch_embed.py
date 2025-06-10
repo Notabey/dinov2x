@@ -86,3 +86,54 @@ class PatchEmbed(nn.Module):
         if self.norm is not None:
             flops += Ho * Wo * self.embed_dim
         return flops
+
+
+class WXYPatchEmbed(nn.Module):
+    """
+    2D image to patch embedding (兼容 PatchEmbed): (B,C,H,W) -> (B,N,D)
+    """
+    def __init__(
+        self,
+        img_size: Union[int, Tuple[int, int]] = 224, # This is not neccassary for RoPE
+        patch_size: int = 14,
+        in_channels: int = 3,
+        embed_dim: int = 1152,
+    ) -> None:
+        super().__init__()
+        self.patch_size = patch_size
+
+        self.in_channels = in_channels
+        self.embed_dim = embed_dim
+
+        kernel_size = [patch_size, patch_size]
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=kernel_size, stride=kernel_size, bias=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        _, _, H, W = x.shape
+        
+        x = self.proj(x)
+
+        x = x.flatten(2).transpose(1, 2)  # (B, N, D)
+        x = self.norm(x)
+        
+        if not self.flatten_embedding:
+            x = x.reshape(-1, H, W, self.embed_dim)  # (B, H', W', D)
+
+        # target_dtype = self.proj.weight.dtype
+        # x = x.view(
+        #     -1, self.in_channels, self.patch_size, self.patch_size
+        # )
+        # x = self.proj(x.to(dtype=target_dtype)).view(-1, self.embed_dim)
+        return x
+
+        # # 2D case，兼容 PatchEmbed
+        # _, _, H, W = x.shape
+        # patch_H, patch_W = self.patch_size
+        # assert H % patch_H == 0 and W % patch_W == 0
+        # x = self.proj(x)  # (B, D, H', W')
+        # H, W = x.size(2), x.size(3)
+        # x = x.flatten(2).transpose(1, 2)  # (B, N, D)
+        # x = self.norm(x)
+        # if not self.flatten_embedding:
+        #     x = x.reshape(-1, H, W, self.embed_dim)  # (B, H', W', D)
+        # return x

@@ -64,8 +64,8 @@ train:
   output_dir: .
   saveckp_freq: 20
   seed: 0
-  num_workers: 0  # 0 for Windows issue
-  OFFICIAL_EPOCH_LENGTH: 1250
+  num_workers: 12  # 0 for Windows issue
+  OFFICIAL_EPOCH_LENGTH: 20000  # = (4*)samples / bspg*ngpus = iterations per epoch
   cache_dataset: true
   centering: "centering" # or "sinkhorn_knopp"
 student:
@@ -80,7 +80,7 @@ student:
   qkv_bias: true
   proj_bias: true
   ffn_bias: true
-  num_register_tokens: 0
+  num_register_tokens: 8
   interpolate_antialias: false
   interpolate_offset: 0.1
 teacher:
@@ -116,3 +116,8 @@ crops:
   local_crops_size: 96
 evaluation:
   eval_period_iterations: 12500
+preprocess:
+  # From Qwen2.5-VL mean/std
+  mean: [0.48145466, 0.4578275, 0.40821073]
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic

@@ -15,7 +15,11 @@ import torch
 from torch import Tensor, LongTensor
 from torch import nn
 
-from transformers.modeling_flash_attention_utils import flash_attn_supports_top_left_mask, apply_rotary_emb, flash_attn_varlen_func, _flash_attention_forward
+from transformers.modeling_flash_attention_utils import flash_attn_supports_top_left_mask, is_flash_attn_available
+if is_flash_attn_available():
+    from transformers.modeling_flash_attention_utils import apply_rotary_emb, flash_attn_varlen_func
+if is_flash_attn_available():
+    from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 from typing import Optional, Tuple
 
@@ -92,105 +96,101 @@ class MemEffAttention(Attention):
         x = self.proj_drop(x)
         return x
     
-class FlashAttention2():
+# class FlashAttention2():
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
 
-        # TODO: Should be removed once Flash Attention for RoCm is bumped to 2.1.
-        # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignment, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
-        # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
-        self._flash_attn_uses_top_left_mask = flash_attn_supports_top_left_mask()
+#         # TODO: Should be removed once Flash Attention for RoCm is bumped to 2.1.
+#         # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignment, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
+#         # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
+#         self._flash_attn_uses_top_left_mask = flash_attn_supports_top_left_mask()
 
-    def forward(
-        self,
-        x: Tensor,
-        attention_mask: Optional[Tensor] = None,
-        position_ids: Optional[LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-    ):
-        bsz, q_len, _ = x.size()
+#     def forward(
+#         self,
+#         x: Tensor,
+#         attention_mask: Optional[Tensor] = None,
+#         position_ids: Optional[LongTensor] = None,
+#         past_key_value: Optional[Cache] = None,
+#         use_cache: bool = False,
+#         cache_position: Optional[torch.LongTensor] = None,
+#         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+#     ):
+#         bsz, q_len, _ = x.size()
 
-        query_states = self.q_proj(x)
-        key_states = self.k_proj(x)
-        value_states = self.v_proj(x)
+#         query_states = self.q_proj(x)
+#         key_states = self.k_proj(x)
+#         value_states = self.v_proj(x)
 
-        query_states = query_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+#         query_states = query_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+#         key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+#         value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
 
-        # Because the input can be padded, the absolute sequence length depends on the max position id.
-        cos, sin = position_embeddings
-        query_states, key_states = apply_multimodal_rotary_pos_emb(
-            query_states, key_states, cos, sin, self.rope_scaling["mrope_section"]
-        )
+#         # Because the input can be padded, the absolute sequence length depends on the max position id.
+#         cos, sin = position_embeddings
+#         query_states, key_states = apply_multimodal_rotary_pos_emb(
+#             query_states, key_states, cos, sin, self.rope_scaling["mrope_section"]
+#         )
 
-        if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+#         if past_key_value is not None:
+#             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
+#             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        # repeat k/v heads if n_kv_heads < n_heads
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-        dropout_rate = 0.0 if not self.training else self.attention_dropout
+#         # repeat k/v heads if n_kv_heads < n_heads
+#         key_states = repeat_kv(key_states, self.num_key_value_groups)
+#         value_states = repeat_kv(value_states, self.num_key_value_groups)
+#         dropout_rate = 0.0 if not self.training else self.attention_dropout
 
-        # In PEFT, usually we cast the layer norms in float32 for training stability reasons
-        # therefore the input hidden states gets silently casted in float32. Hence, we need
-        # cast them back in float16 just to be sure everything works as expected.
-        input_dtype = query_states.dtype
-        if input_dtype == torch.float32:
-            if torch.is_autocast_enabled():
-                target_dtype = torch.get_autocast_gpu_dtype()
-            # Handle the case where the model is quantized
-            elif hasattr(self.config, "_pre_quantization_dtype"):
-                target_dtype = self.config._pre_quantization_dtype
-            else:
-                target_dtype = self.q_proj.weight.dtype
+#         # In PEFT, usually we cast the layer norms in float32 for training stability reasons
+#         # therefore the input hidden states gets silently casted in float32. Hence, we need
+#         # cast them back in float16 just to be sure everything works as expected.
+#         input_dtype = query_states.dtype
+#         if input_dtype == torch.float32:
+#             if torch.is_autocast_enabled():
+#                 target_dtype = torch.get_autocast_gpu_dtype()
+#             # Handle the case where the model is quantized
+#             elif hasattr(self.config, "_pre_quantization_dtype"):
+#                 target_dtype = self.config._pre_quantization_dtype
+#             else:
+#                 target_dtype = self.q_proj.weight.dtype
 
-            logger.warning_once(
-                f"The input hidden states seems to be silently casted in float32, this might be related to"
-                f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
-                f" {target_dtype}."
-            )
+#             logger.warning_once(
+#                 f"The input hidden states seems to be silently casted in float32, this might be related to"
+#                 f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
+#                 f" {target_dtype}."
+#             )
 
-            query_states = query_states.to(target_dtype)
-            key_states = key_states.to(target_dtype)
-            value_states = value_states.to(target_dtype)
+#             query_states = query_states.to(target_dtype)
+#             key_states = key_states.to(target_dtype)
+#             value_states = value_states.to(target_dtype)
 
-        # Reashape to the expected shape for Flash Attention
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
+#         # Reashape to the expected shape for Flash Attention
+#         query_states = query_states.transpose(1, 2)
+#         key_states = key_states.transpose(1, 2)
+#         value_states = value_states.transpose(1, 2)
 
-        if (
-            self.config.use_sliding_window
-            and getattr(self.config, "sliding_window", None) is not None
-            and self.layer_idx >= self.config.max_window_layers
-        ):
-            sliding_window = self.config.sliding_window
-        else:
-            sliding_window = None
+#         if (
+#             self.config.use_sliding_window
+#             and getattr(self.config, "sliding_window", None) is not None
+#             and self.layer_idx >= self.config.max_window_layers
+#         ):
+#             sliding_window = self.config.sliding_window
+#         else:
+#             sliding_window = None
 
-        attn_output = _flash_attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            q_len,
-            dropout=dropout_rate,
-            sliding_window=sliding_window,
-            is_causal=self.is_causal,
-            use_top_left_mask=self._flash_attn_uses_top_left_mask,
-        )
+#         attn_output = _flash_attention_forward(
+#             query_states,
+#             key_states,
+#             value_states,
+#             attention_mask,
+#             q_len,
+#             dropout=dropout_rate,
+#             sliding_window=sliding_window,
+#             is_causal=self.is_causal,
+#             use_top_left_mask=self._flash_attn_uses_top_left_mask,
+#         )
 
-        attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
+#         attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
+#         attn_output = self.o_proj(attn_output)
 
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
+#         return attn_output, past_key_value

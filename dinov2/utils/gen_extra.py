@@ -14,7 +14,7 @@ def gen_extra(data_name: str, root: str, extra: str=None, webdataset: bool=False
 if __name__ == "__main__":
     # Change the following variables as needed
     data_name = "ImageNet"
-    root = r"D:\Pictures\DataSets\imagenet-1k-wds"
+    root = r"/root/autodl-tmp/imagenet"
     extra_root = root
 
-    gen_extra(data_name=data_name, root=root, extra=extra_root, webdataset=True)
+    gen_extra(data_name=data_name, root=root, extra=extra_root, webdataset=False)

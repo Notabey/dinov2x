@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.utils.checkpoint
 from torch.nn.init import trunc_normal_
 
-from dinov2.layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
+from dinov2.layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, DynamicTanh, NestedTensorBlock as Block
 
 
 logger = logging.getLogger("dinov2")
@@ -59,6 +59,7 @@ class DinoVisionTransformer(nn.Module):
         drop_path_uniform=False,
         init_values=None,  # for layerscale: None or 0 => no layerscale
         embed_layer=PatchEmbed,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
         act_layer=nn.GELU,
         block_fn=Block,
         ffn_layer="mlp",
@@ -93,7 +94,6 @@ class DinoVisionTransformer(nn.Module):
             interpolate_offset: (float) work-around offset to apply when interpolating positional embeddings
         """
         super().__init__()
-        norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_tokens = 1
@@ -329,6 +329,14 @@ class DinoVisionTransformer(nn.Module):
         else:
             return self.head(ret["x_norm_clstoken"])
 
+class WXYVisionTransformer(DinoVisionTransformer):
+    """
+    A variant of DinoVisionTransformer.
+    This is used in the WXY paper.
+    """
+    def __init__(self, **kwargs):
+        super().__init__()
+
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):
     """ViT weight initialization, original timm impl (for reproducibility)"""
@@ -375,6 +383,7 @@ def vit_large(patch_size=16, num_register_tokens=0, **kwargs):
         mlp_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),
         num_register_tokens=num_register_tokens,
+        norm_layer=partial(DynamicTanh),
         **kwargs,
     )
     return model
@@ -392,6 +401,23 @@ def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
         mlp_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),
         num_register_tokens=num_register_tokens,
+        **kwargs,
+    )
+    return model
+
+def vit_giant_wxy(patch_size=14, num_register_tokens=8, **kwargs):
+    """
+    Close to ViT-giant, with embed-dim 1536 and 32 heads => embed-dim per head 48
+    """
+    model = DinoVisionTransformer(
+        patch_size=patch_size,
+        embed_dim=1280,
+        depth=32,
+        num_heads=16,
+        mlp_ratio=4,
+        block_fn=partial(Block, attn_class=MemEffAttention),
+        num_register_tokens=num_register_tokens,
+        norm_layer=partial(DynamicTanh),
         **kwargs,
     )
     return model

@@ -15,6 +15,11 @@ from .transforms import (
 
 logger = logging.getLogger("dinov2")
 
+class Rescale(object):
+    def __init__(self, factor=1/255.):
+        self.factor = factor
+    def __call__(self, x):
+        return x * self.factor
 
 class DataAugmentationDINO(object):
     def __init__(
@@ -24,6 +29,8 @@ class DataAugmentationDINO(object):
         local_crops_number,
         global_crops_size=224,
         local_crops_size=96,
+        mean=[0.48145466, 0.4578275, 0.40821073],
+        std=[0.26862954, 0.26130258, 0.27577711],
     ):
         self.global_crops_scale = global_crops_scale
         self.local_crops_scale = local_crops_scale
@@ -85,7 +92,8 @@ class DataAugmentationDINO(object):
         self.normalize = transforms.Compose(
             [
                 transforms.ToTensor(),
-                make_normalize_transform(),
+                Rescale(1 / 255),  # <--- 新增rescale
+                transforms.Normalize(mean=mean, std=std),  # 直接用torchvision的Normalize
             ]
         )
 

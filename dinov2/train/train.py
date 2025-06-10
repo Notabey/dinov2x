@@ -134,6 +134,7 @@ def do_test(cfg, model, iteration):
 
 
 def do_train(cfg, model, resume=False):
+    logger.info(f"[rank {os.environ.get('RANK')}] LOCAL_RANK={os.environ.get('LOCAL_RANK')}, WORLD_SIZE={os.environ.get('WORLD_SIZE')}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, torch.cuda.current_device()={torch.cuda.current_device()}")
     model.train()
     inputs_dtype = torch.half
     fp16_scaler = model.fp16_scaler  # for mixed precision training
@@ -159,7 +160,7 @@ def do_train(cfg, model, resume=False):
 
     periodic_checkpointer = PeriodicCheckpointer(
         checkpointer,
-        period=3 * OFFICIAL_EPOCH_LENGTH,
+        period=2 * OFFICIAL_EPOCH_LENGTH, # @wxy TODO: period not relative to saveckp_freq? Changed 3* to 2*.
         max_iter=max_iter,
         max_to_keep=3,
     )
@@ -199,7 +200,7 @@ def do_train(cfg, model, resume=False):
         target_transform=empty_tuple,
     )
     # sampler_type = SamplerType.INFINITE
-    sampler_type = SamplerType.SHARDED_INFINITE
+    sampler_type = SamplerType.SHARDED_INFINITE_NEW
     data_loader = make_data_loader(
         dataset=dataset,
         batch_size=cfg.train.batch_size_per_gpu,
